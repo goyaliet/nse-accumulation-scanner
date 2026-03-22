@@ -1,0 +1,13 @@
+{
+  "crons": [
+    {
+      "path": "/api/scan",
+      "schedule": "30 13 * * 1-5"
+    }
+  ],
+  "functions": {
+    "api/scan.py": {
+      "maxDuration": 300
+    }
+  }
+}
