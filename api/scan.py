@@ -171,7 +171,8 @@ def run_backfill(target_days=15):
         html = generate_html(scored, scan_date, dict(total=len(stocks2), hist_days=mx))
         gh_write("scanner/streak_tracker.csv", new_strk, f"streaks {scan_date}", strk_sha)
         ds = scan_date.replace("-", "")
-        gh_write(f"reports/{ds}.html", html, f"report {scan_date}")
+        _, rep_sha = gh_read(f"reports/{ds}.html")
+        gh_write(f"reports/{ds}.html", html, f"report {scan_date}", rep_sha)
         _, idx_sha = gh_read("index.html")
         gh_write("index.html", html, f"index {scan_date}", idx_sha)
         arch_txt, arch_sha = gh_read("cache/archive_index.json")
@@ -496,7 +497,8 @@ def run_scan():
     log.append("Wrote streaks")
 
     ds = scan_date.replace("-", "")
-    gh_write(f"reports/{ds}.html", html, f"report {scan_date}")
+    _, rep_sha = gh_read(f"reports/{ds}.html")
+    gh_write(f"reports/{ds}.html", html, f"report {scan_date}", rep_sha)
     log.append(f"Wrote reports/{ds}.html")
 
     _, idx_sha = gh_read("index.html")
