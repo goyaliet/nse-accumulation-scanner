@@ -4,5 +4,11 @@
     "file": "reports/20260320.html",
     "strong": 0,
     "moderate": 0
+  },
+  {
+    "date": "2026-02-26",
+    "file": "reports/20260226.html",
+    "strong": 22,
+    "moderate": 169
   }
 ]
