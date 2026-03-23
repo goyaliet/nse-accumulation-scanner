@@ -121,76 +121,83 @@ def _trading_days_back(n_days):
             break
     return days  # newest first
 
-def run_backfill(target_days=15):
-    """Download last target_days trading days, build history, commit, then run scan."""
+def run_backfill(target_days=16):
+    """Download last target_days trading days, build history, score, and commit all inline.
+    Completely self-contained — no dependency on gh_read working for history afterward.
+    """
     log = []
     opener = _nse_opener()
     log.append(f"Backfill: targeting {target_days} trading days")
 
-    candidates = _trading_days_back(target_days + 5)  # a few extra for holidays
+    # Extra buffer for Indian market holidays (use 2x candidates)
+    candidates = _trading_days_back(target_days * 2)
     history = {}
-    collected = []
+    collected_dates = []
+    stocks_by_date = {}  # keep raw stocks for each date so we can score the last day
 
     for day in reversed(candidates):  # oldest first
         raw, date_str = download_bhav(date=day, opener=opener)
         if not raw:
-            log.append(f"Skip {day.strftime('%Y-%m-%d')} (no data)")
+            log.append(f"Skip {day.strftime('%Y-%m-%d')} (no data / holiday)")
             continue
         stocks = parse_bhav(raw)
         if not stocks:
-            log.append(f"Skip {day.strftime('%Y-%m-%d')} (0 stocks parsed)")
+            log.append(f"Skip {day.strftime('%Y-%m-%d')} (0 EQ stocks parsed)")
             continue
         history = update_history(history, stocks, date_str)
-        collected.append(date_str)
+        collected_dates.append(date_str)
+        stocks_by_date[date_str] = stocks
         log.append(f"Got {date_str}: {len(stocks)} stocks")
-        if len(collected) >= target_days:
+        if len(collected_dates) >= target_days:
             break
 
-    log.append(f"Collected {len(collected)} days, {len(history)} symbols")
+    log.append(f"Collected {len(collected_dates)} days, {len(history)} symbols")
 
-    if not collected:
+    if not collected_dates:
         return dict(ok=False, error="Backfill: no data collected", log=log)
 
-    # Commit history
+    # Commit full history (all collected days)
     _, hist_sha = gh_read("cache/rolling_history.csv")
     gh_write("cache/rolling_history.csv",
              history_to_csv(history),
-             f"backfill {collected[0]} to {collected[-1]}", hist_sha)
+             f"backfill {collected_dates[0]} to {collected_dates[-1]}", hist_sha)
     log.append("Wrote rolling_history.csv")
 
-    # Now run a normal scan on the most recent day's data
-    most_recent_date = collected[-1]
-    raw2, scan_date = download_bhav(opener=opener)
-    if raw2 and scan_date == most_recent_date:
-        stocks2 = parse_bhav(raw2)
-        avgs = build_averages(history)
-        scored = score_stocks(stocks2, avgs)
-        strk_csv, strk_sha = gh_read("scanner/streak_tracker.csv")
-        new_strk = apply_streaks(scored, strk_csv)
-        mx = max((len(r) for r in history.values()), default=0)
-        html = generate_html(scored, scan_date, dict(total=len(stocks2), hist_days=mx))
-        gh_write("scanner/streak_tracker.csv", new_strk, f"streaks {scan_date}", strk_sha)
-        ds = scan_date.replace("-", "")
-        _, rep_sha = gh_read(f"reports/{ds}.html")
-        gh_write(f"reports/{ds}.html", html, f"report {scan_date}", rep_sha)
-        _, idx_sha = gh_read("index.html")
-        gh_write("index.html", html, f"index {scan_date}", idx_sha)
-        arch_txt, arch_sha = gh_read("cache/archive_index.json")
-        archive = json.loads(arch_txt) if arch_txt else []
-        entry = dict(date=scan_date, file=f"reports/{ds}.html",
-                     strong=sum(1 for s in scored if s["grade"]=="STRONG"),
-                     moderate=sum(1 for s in scored if s["grade"]=="MODERATE"))
-        archive = [a for a in archive if a["date"] != scan_date] + [entry]
-        archive.sort(key=lambda x: x["date"], reverse=True)
-        gh_write("cache/archive_index.json", json.dumps(archive[:90], indent=2),
-                 f"archive {scan_date}", arch_sha)
-        log.append(f"Scan: {entry['strong']} strong, {entry['moderate']} moderate")
-        return dict(ok=True, backfill=True, days_collected=len(collected),
-                    date=scan_date, url=PAGES_URL,
-                    strong=entry["strong"], moderate=entry["moderate"],
-                    total=len(stocks2), log=log)
+    # Score the most recently collected day using averages from all collected history
+    scan_date = collected_dates[-1]
+    today_stocks = stocks_by_date[scan_date]
+    avgs = build_averages(history)
+    log.append(f"Averages: {len(avgs)} symbols with >={MIN_HISTORY_DAYS} days")
+    scored = score_stocks(today_stocks, avgs)
+    log.append(f"Scored: {len(scored)} hits on {scan_date}")
 
-    return dict(ok=True, backfill=True, days_collected=len(collected), log=log)
+    # Apply streaks, generate HTML, write all outputs
+    strk_csv, strk_sha = gh_read("scanner/streak_tracker.csv")
+    new_strk = apply_streaks(scored, strk_csv)
+    mx = max((len(r) for r in history.values()), default=0)
+    html = generate_html(scored, scan_date, dict(total=len(today_stocks), hist_days=mx))
+
+    gh_write("scanner/streak_tracker.csv", new_strk, f"streaks {scan_date}", strk_sha)
+    ds = scan_date.replace("-", "")
+    _, rep_sha = gh_read(f"reports/{ds}.html")
+    gh_write(f"reports/{ds}.html", html, f"report {scan_date}", rep_sha)
+    _, idx_sha = gh_read("index.html")
+    gh_write("index.html", html, f"index {scan_date}", idx_sha)
+    arch_txt, arch_sha = gh_read("cache/archive_index.json")
+    archive = json.loads(arch_txt) if arch_txt else []
+    entry = dict(date=scan_date, file=f"reports/{ds}.html",
+                 strong=sum(1 for s in scored if s["grade"] == "STRONG"),
+                 moderate=sum(1 for s in scored if s["grade"] == "MODERATE"))
+    archive = [a for a in archive if a["date"] != scan_date] + [entry]
+    archive.sort(key=lambda x: x["date"], reverse=True)
+    gh_write("cache/archive_index.json", json.dumps(archive[:90], indent=2),
+             f"archive {scan_date}", arch_sha)
+    log.append(f"Result: {entry['strong']} strong, {entry['moderate']} moderate")
+
+    return dict(ok=True, backfill=True, days_collected=len(collected_dates),
+                date=scan_date, url=PAGES_URL,
+                strong=entry["strong"], moderate=entry["moderate"],
+                total=len(today_stocks), log=log)
 
 def parse_bhav(raw):
     """Parse bhavcopy into list of stock dicts (EQ series only)."""
@@ -528,7 +535,8 @@ def run_scan():
 class handler(BaseHTTPRequestHandler):
     def do_GET(self):
         try:
-            qs = parse_qs(urlparse(self.path).query)
+            qs_str = urlparse(self.path).query or os.environ.get("QUERY_STRING", "")
+            qs = parse_qs(qs_str)
             backfill_param = qs.get("backfill", ["0"])[0]
             if backfill_param.isdigit() and int(backfill_param) > 0:
                 result = run_backfill(int(backfill_param))
