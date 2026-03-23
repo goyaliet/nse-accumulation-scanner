@@ -45,13 +45,24 @@ def _gh_headers():
     }
 
 def gh_read(path):
-    """Read file from GitHub repo.  Returns (text, sha) or (None, None)."""
+    """Read file from GitHub repo.  Returns (text, sha) or (None, None).
+    Falls back to raw URL for files >1 MB (GitHub API omits content field)."""
     url = f"{GITHUB_API}/repos/{GITHUB_REPO}/contents/{path}"
     req = Request(url, headers=_gh_headers())
     try:
         with urlopen(req, timeout=15) as r:
             d = json.loads(r.read())
-            return base64.b64decode(d["content"]).decode(), d["sha"]
+        sha = d.get("sha")
+        content = d.get("content", "")
+        if content and d.get("encoding") == "base64":
+            return base64.b64decode(content).decode(), sha
+        # File >1 MB: API returns metadata only — fetch content via raw URL
+        raw_url = (f"https://raw.githubusercontent.com/"
+                   f"{GITHUB_REPO}/main/{path}")
+        raw_req = Request(raw_url,
+                          headers={"Authorization": f"token {GITHUB_TOKEN}"})
+        with urlopen(raw_req, timeout=30) as r2:
+            return r2.read().decode(), sha
     except HTTPError as e:
         if e.code == 404:
             return None, None
@@ -129,13 +140,14 @@ def run_backfill(target_days=16):
     opener = _nse_opener()
     log.append(f"Backfill: targeting {target_days} trading days")
 
-    # Extra buffer for Indian market holidays (use 2x candidates)
+    # Collect newest-first so collected_dates[0] = most recent trading day (e.g. Mar 20)
+    # Use 2x buffer for Indian market holidays
     candidates = _trading_days_back(target_days * 2)
     history = {}
-    collected_dates = []
-    stocks_by_date = {}  # keep raw stocks for each date so we can score the last day
+    collected_dates = []      # newest first
+    stocks_by_date = {}
 
-    for day in reversed(candidates):  # oldest first
+    for day in candidates:  # newest first
         raw, date_str = download_bhav(date=day, opener=opener)
         if not raw:
             log.append(f"Skip {day.strftime('%Y-%m-%d')} (no data / holiday)")
@@ -156,17 +168,23 @@ def run_backfill(target_days=16):
     if not collected_dates:
         return dict(ok=False, error="Backfill: no data collected", log=log)
 
+    # collected_dates[0] = most recent day (to score); [-1] = oldest (for commit msg)
+    scan_date = collected_dates[0]
+    today_stocks = stocks_by_date[scan_date]
+
     # Commit full history (all collected days)
+    oldest, newest = collected_dates[-1], collected_dates[0]
     _, hist_sha = gh_read("cache/rolling_history.csv")
     gh_write("cache/rolling_history.csv",
              history_to_csv(history),
-             f"backfill {collected_dates[0]} to {collected_dates[-1]}", hist_sha)
+             f"backfill {oldest} to {newest}", hist_sha)
     log.append("Wrote rolling_history.csv")
 
-    # Score the most recently collected day using averages from all collected history
-    scan_date = collected_dates[-1]
-    today_stocks = stocks_by_date[scan_date]
-    avgs = build_averages(history)
+    # Score scan_date against averages built from the OTHER days (cleaner signal)
+    hist_excl = {sym: [r for r in rows if r["date"] != scan_date]
+                 for sym, rows in history.items()}
+    hist_excl = {sym: rows for sym, rows in hist_excl.items() if rows}
+    avgs = build_averages(hist_excl)
     log.append(f"Averages: {len(avgs)} symbols with >={MIN_HISTORY_DAYS} days")
     scored = score_stocks(today_stocks, avgs)
     log.append(f"Scored: {len(scored)} hits on {scan_date}")
