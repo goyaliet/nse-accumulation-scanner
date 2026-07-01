@@ -1,5 +1,11 @@
 [
   {
+    "date": "2026-07-01",
+    "file": "reports/20260701.html",
+    "strong": 26,
+    "moderate": 287
+  },
+  {
     "date": "2026-06-30",
     "file": "reports/20260630.html",
     "strong": 31,
