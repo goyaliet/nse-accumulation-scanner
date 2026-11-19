@@ -1,5 +1,11 @@
 [
   {
+    "date": "2026-11-19",
+    "file": "reports/20261119.html",
+    "strong": 45,
+    "moderate": 280
+  },
+  {
     "date": "2026-11-18",
     "file": "reports/20261118.html",
     "strong": 33,
@@ -532,11 +538,5 @@
     "file": "reports/20260716.html",
     "strong": 27,
     "moderate": 200
-  },
-  {
-    "date": "2026-07-15",
-    "file": "reports/20260715.html",
-    "strong": 15,
-    "moderate": 230
   }
 ]
